@@ -27,6 +27,7 @@
 /*
  * Include this first as it defines things that affect the kernel headers.
  */
+
 #include <linux/version.h>
 
 #ifndef KERNEL_VERSION
@@ -70,6 +71,7 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/errno.h>
+#include <linux/mca.h>
 #include <linux/pci.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,3,46) && \
     LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,17) || \
@@ -85,10 +87,56 @@
 #include <asm/pgtable.h>
 #include <asm/processor.h>
 
+// In Micro Channel world, a K6-2 CPU or higher is very unlikely.
+//TODO port and test on PC 750 w/ K6-III CPU.
+#ifdef CONFIG_MTRR
+#undef CONFIG_MTRR
+#endif
 #include <asm/uaccess.h>
 #ifdef CONFIG_MTRR
 #include <asm/mtrr.h>
 #endif
+
+/* The Micro Channel Adapter ID */
+#define ADAPTER_MCA_ID                  0x8F63
+#define ADAPTER_NAME                   "Adaptec ASIC-9060R MCA/PCI bridge with 3dfx Voodoo graphics"
+
+/* The ASIC puts the daughter card at an offset of
+   0x1000 above the ASICs own MCA IO space */
+#define ASIC_IO_OFFSET                  0x00001000
+
+/* The ASIC's register to write the PCI_CONFIG_CMD
+   to to access the daughter card's PCI config space */
+#define ASIC_PCI_CONFIG_CMD_REGISTER    0x04
+
+/* Magic bit to access the daughter card's PCI
+   configuration space */
+#define ASIC_PCI_CONFIG_CMD             0x01
+
+/* The ASIC's daughter card IO tunnel address
+   register to write the daughter card's register address to */
+#define ASIC_IO_ADDRESS_REGISTER        0x08
+
+/* The ASIC's daughter card IO tunnel data
+   register to read/write the daughter card's selected register */
+#define ASIC_IO_DATA_REGISTER           0x0C
+
+/* The ASIC's interrupt enable/disable register */
+#define ASIC_IRQ_ENABLE_REGISTER        0x1C
+
+/* The ASIC's index register for accessing
+    the VPD data, byte by byte */
+#define ASIC_VPD_INDEX_REGISTER         0x24
+
+/* The ASIC's <unknown> register, related to
+   the VPD data. "VPD EEPROM operation ok" indicator? */
+#define ASIC_VPD_STATUS_REGISTER        0x25
+
+/* The ASIC's data register for reading
+   the VPD data, byte by byte or short by short */
+#define ASIC_VPD_DATA_REGISTER          0x26
+
+#define ASIC_IO_SIZE					0x400
 
 #define MAJOR_3DFX 107
 #define DEVICE_VOODOO 0
@@ -117,6 +165,10 @@
 
 #ifndef PCI_VENDOR_ID_ALLIANCE
 #define PCI_VENDOR_ID_ALLIANCE 0x1142
+#endif
+
+#ifndef PCI_DEVICE_ID_3DFX_VOODOO
+#define PCI_DEVICE_ID_3DFX_VOODOO 1
 #endif
 
 #ifndef PCI_VENDOR_ID_MACRONIX
@@ -187,11 +239,11 @@ static struct pci_card {
 };
 #endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0) */
 
-#ifdef DEBUG
+//#ifdef DEBUG
 #define DEBUGMSG(x) printk x
-#else
-#define DEBUGMSG(x)
-#endif
+//#else
+//TODO #define DEBUGMSG(x)
+//#endif
 
 /*
  * This macro is for accessing vma->vm_offset or vma->vm_pgoff depending
@@ -229,8 +281,9 @@ struct cardInfo_t {
 	int addr0;
 	int addr1;
 	int addr2;
-	unsigned char bus;
-	struct pci_dev *dev;
+	int memsize;
+	unsigned int ioaddr;
+	int slot;
 	struct file *curFile;
 #ifdef CONFIG_MTRR
 	int mtrr_buf;
@@ -245,10 +298,71 @@ typedef struct cardInfo_t cardInfo;
 void cleanup_module(void);
 #endif
 
-#define MAXCARDS 16
+#define MAXCARDS 1
 
 static cardInfo cards[MAXCARDS];
 static int numCards = 0;
+
+static int asic_read_pci_config(unsigned long ioaddr, int index)
+{
+    outb(ASIC_PCI_CONFIG_CMD, ioaddr + ASIC_PCI_CONFIG_CMD_REGISTER);
+    outl(index, ioaddr + ASIC_IO_ADDRESS_REGISTER);
+    return (inl(ioaddr + ASIC_IO_DATA_REGISTER));
+}
+
+static void asic_write_pci_config(unsigned long ioaddr, int index, int val)
+{
+    outb(ASIC_PCI_CONFIG_CMD, ioaddr + ASIC_PCI_CONFIG_CMD_REGISTER);
+    outl(index, ioaddr + ASIC_IO_ADDRESS_REGISTER);
+    outl(val, ioaddr + ASIC_IO_DATA_REGISTER);
+}
+
+static void asic_enable_interrupt(unsigned long ioaddr)
+{
+    outb(1, ioaddr + ASIC_IRQ_ENABLE_REGISTER);
+}
+
+static void asic_disable_interrupt(unsigned long ioaddr)
+{
+    outb(0, ioaddr + ASIC_IRQ_ENABLE_REGISTER);
+}
+
+static void init_asic(unsigned long ioaddr)
+{
+    int i, temp;		//TODO remove
+
+    /* This sequence of writes goes out to the ASIC
+       and is required to start it up.
+       IBM only knows what they mean. */
+    outb(0x00,       ioaddr + 0x1D);
+    outb(0x4F,       ioaddr + 0x1E);
+    outb(0x04,       ioaddr + 0x1F);
+    outl(0x00000000, ioaddr + 0x28);
+    outw(0x0006,     ioaddr + 0x00);
+    outl(0x00000000, ioaddr + 0x10);    //TODO BAR0 base/size? Decode-Mask like 0x3FFFFFFF ?
+    //outl(0x3FFFFFFF, ioaddr + 0x10);    //TODO BAR0 base/size? Decode-Mask like 0x3FFFFFFF ?
+    //outl(0x40000000, ioaddr + 0x10);    //TODO BAR0 base/size? Decode-Mask like 0x3FFFFFFF ?
+    outl(0x00000000, ioaddr + 0x14);    //TODO BAR1 base/size?
+    outw(0x0FFF,     ioaddr + 0x1A);
+    outb(0x7F,       ioaddr + 0x22);
+    outw(0x03FF,     ioaddr + 0x20);    //TODO IO decode mask? No, does not look like it.
+    
+    //for (i = 0; i < 0x400; i += 4)
+    //{
+    //    temp = inl(ioaddr + i);
+    //    printk("%8.8X ", temp);
+    //    
+    //    if ((i % 16) == 0)
+    //        printk("\n");
+    //} 
+
+    //for (i = 0; i < 0x40; i += 4)		//TODO remove
+    //{
+    //    temp = asic_read_pci_config(ioaddr, i);
+    //    DEBUGMSG(("PCI config 0x%2.2X: 0x%8.8X\n", i, temp));
+    //}
+}
+
 #if HAVE_DEVFS
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,3,46) && \
     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0) || \
@@ -258,41 +372,122 @@ static devfs_handle_t devfs_handle;
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-static void findCardType(int vendor, int device)
+static void findMcaCardType(int vendor, int device)
 {
-	struct pci_dev *dev = NULL;
+	unsigned int ioaddr = 0;
+    unsigned int  irq_line = 0;
+    unsigned int  dma = 0;
+    int cards_found = 0;
+    int slot = MCA_NOTFOUND;
+	unsigned int viddid, control, membase, temp, memsize;
+    int i;  //TODO remove
 
-	while (numCards < MAXCARDS && (dev = pci_get_device(vendor, device, dev))) {
-		pci_read_config_dword(dev, PCI_BASE_ADDRESS_0, &cards[numCards].addr0);
-		pci_read_config_dword(dev, PCI_BASE_ADDRESS_1, &cards[numCards].addr1);
-		pci_read_config_dword(dev, PCI_BASE_ADDRESS_2, &cards[numCards].addr2);
-		cards[numCards].bus = dev->bus->number;
-		cards[numCards].dev = dev;
+    if(ioaddr != 0)
+        return ;
 
-		cards[numCards].addr0 &= ~0xF;
-		cards[numCards].addr1 &= ~0xF;
-		cards[numCards].vendor = vendor;
-		cards[numCards].type = device;
-		cards[numCards].curFile = 0;
+    slot = mca_find_unused_adapter(ADAPTER_MCA_ID, 0);
+    if (slot != MCA_NOTFOUND)
+    {
+        /* Upper 6 bits of POS[2] contain the IO base * 0x100) */
+        ioaddr = ((mca_read_pos(slot, 2) & 0xFC)) << 8;
 
-		DEBUGMSG(("3dfx: board vendor %d type %d located at %x/%x bus %d dev %d\n",
-			 vendor, device,
-			 cards[numCards].addr0, cards[numCards].addr1,
-			 cards[numCards].bus, cards[numCards].dev->devfn));
+        /* Lower 2 bits of POS[5] encode the IRQ */
+        switch (mca_read_pos(slot, 5) & 0x03)
+        {
+            case 0x00: irq_line = 15; break;
+            case 0x01: irq_line = 12; break;
+            case 0x02: irq_line = 11; break;
+            default:   irq_line = 10; break;
+        }
 
-		++numCards;
-	}
+        /* Upper 4 bits of POS[3] contain the DMA arbitration level.
+           Unused from CPU side, but reserved by POS for the daughter card
+           busmaster to use */
+        dma = mca_read_pos(slot, 3) >> 4;
+
+        DEBUGMSG(("%s found in MCA slot %d using I/O 0x%4.4lX, IRQ %u, DMA %d\n",
+            ADAPTER_NAME, slot, ioaddr, irq_line, dma));
+
+        init_asic(ioaddr);
+
+		viddid = asic_read_pci_config(ioaddr, PCI_VENDOR_ID_LINUX);
+
+		if (  ((viddid & 0xFFFF) == vendor)
+			&&((viddid > 16)     == device))
+		{
+			temp = asic_read_pci_config(ioaddr, PCI_INTERRUPT_LINE);
+			temp |= 256;	// Disable interrupts
+			asic_write_pci_config(ioaddr, PCI_INTERRUPT_LINE, temp);
+
+			// We don't have a real PCI BIOS to set MEMEN and memory mapping base for us.
+			// We are the BIOS now! -> Let's do it manually.
+
+			// No Micro Channel x86 computer known to me has more than 256 MB of RAM.
+			// Let's place the memory window at 1 GB, this is where the PCI BIOS
+			// of my IBM PC 750 sets it when I put the 3dfx card in a PCI slot.
+            // Let's hope it's free.
+            membase = 0x40000000;
+			asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX, membase | (1 << 3));    //TODO check if memory is used?
+			asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_1_LINUX, 0x00000000);
+
+            cards[numCards].addr0 = membase;
+            cards[numCards].addr1 = 0x00000000;
+			
+			/* Optional, determining BAR size:
+             * From the PCI Specification v2.2:
+			 * Implementation Note: Sizing a 32 bit Base Address Register Example */
+			temp = asic_read_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX);
+			asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX, 0xFFFFFFF0);
+			memsize = asic_read_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX);
+			memsize &= 0xFFFFFFF0;		// Ignore encoding information bits
+			memsize ^= 0xFFFFFFFF;		// Invert all bits
+			memsize += 1;				// This is the memory range decoded by the register!
+            DEBUGMSG(("3dfx: BAR size is %xh\n", memsize));
+            asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX, temp);            
+
+			control = asic_read_pci_config(ioaddr, PCI_COMMAND_LINUX);
+			control |= (1 << 1); 	// Set MEMEN bit to enable memory address decoding
+            //control &= ~(1 << 1); 	// Set MEMEN bit to enable memory address decoding //TODO remove
+			asic_write_pci_config(ioaddr, PCI_COMMAND_LINUX, control);
+
+            cards[numCards].memsize = memsize;
+			cards[numCards].ioaddr = ioaddr;
+			cards[numCards].slot   = slot;
+            cards[numCards].addr0 &= ~0xF;
+            cards[numCards].addr1 &= ~0xF;
+            cards[numCards].vendor = (viddid & 0xFFFF);
+            cards[numCards].type = (viddid > 16);
+            cards[numCards].curFile = 0;
+
+            DEBUGMSG(("3dfx: board vendor %4.4x type %4.4x located at %xh/%xh\n",
+                vendor, device, cards[numCards].addr0, cards[numCards].addr1));
+                
+            for (i = membase; i < (membase + 0x100); i += 4)
+            {
+                int * p = (int *)i;                
+                printk("%8.8X ", (int)(*(int *)i));
+                
+                //if (((i + 1) % 16) == 0)
+                //    printk("\n");
+            } 
+
+            mca_set_adapter_name(slot, ADAPTER_NAME);
+            mca_mark_as_used(slot);
+            request_region(ioaddr, ASIC_IO_SIZE, ADAPTER_NAME);
+            request_mem_region(membase, memsize, ADAPTER_NAME);
+
+            ++numCards;
+		}
+    }
 }
 
 static int findCards(void)
 {
 	int i;
 
-	if (!pci_present())
-		return 0;
 	numCards = 0;
 	for (i = 0; i < (sizeof(pci_card_list)/sizeof(struct pci_card)); i++)
-		findCardType(pci_card_list[i].vendor, pci_card_list[i].device);
+		findMcaCardType(pci_card_list[i].vendor, pci_card_list[i].device);
 
 	return numCards;
 }
@@ -387,6 +582,7 @@ static int doQueryFetch(pioData *desc)
 	short retword;
 	int retlong;
 	int i;
+	int temp;
 
 	if (desc->device < 0 || desc->device >= numCards)
 		return -EINVAL;
@@ -427,7 +623,7 @@ static int doQueryFetch(pioData *desc)
 		if (desc->size != 4)
 			return -EINVAL;
 		break;
-	case PCI_REVISION_ID:
+	case PCI_REVISION_ID_LINUX:
 		if (desc->size != 1)
 			return -EINVAL;
 		break;
@@ -441,17 +637,19 @@ static int doQueryFetch(pioData *desc)
 
 	switch (desc->size) {
 	case 1:
-		pci_read_config_byte(cards[i].dev, desc->port, &retchar);
+		temp = asic_read_pci_config(cards[desc->device].ioaddr, desc->port);
+		retchar = temp & 0xFF;
 		if (copy_to_user(desc->value, &retchar, 1))
 			return -EFAULT;
 		break;
 	case 2:
-		pci_read_config_word(cards[i].dev, desc->port, &retword);
+		temp = asic_read_pci_config(cards[desc->device].ioaddr, desc->port);
+		retword = temp & 0xFFFF;
 		if (copy_to_user(desc->value, &retword, 2))
 			return -EFAULT;
 		break;
 	case 4:
-		pci_read_config_dword(cards[i].dev, desc->port, &retlong);
+		retlong = asic_read_pci_config(cards[desc->device].ioaddr, desc->port);
 		if (copy_to_user(desc->value, &retlong, 4))
 			return -EFAULT;
 		break;
@@ -499,7 +697,7 @@ static int doQueryUpdate(pioData *desc)
 		return -EINVAL;
 	}
 
-	pci_read_config_dword(cards[desc->device].dev, desc->port & ~0x3, &retval);
+	retval = asic_read_pci_config(cards[desc->device].ioaddr, desc->port & ~0x3);
 	switch (desc->size) {
 	case 1:
 		if (copy_from_user(&retchar, desc->value, 1))
@@ -524,7 +722,7 @@ static int doQueryUpdate(pioData *desc)
 	}
 
 	retval = (retval & ~mask) | preval;
-	pci_write_config_dword(cards[desc->device].dev, desc->port, retval);
+	asic_write_pci_config(cards[desc->device].ioaddr, desc->port, retval);
 
 	return 0;
 }
@@ -810,7 +1008,7 @@ static int probe_3dfx(struct pci_dev *dev, const struct pci_device_id *id)
 	cards[numCards].curFile = 0;
 
 
-	DEBUGMSG(("3dfx: board vendor %d type %d located at %x/%x\n",
+	DEBUGMSG(("3dfx: board vendor %4.4x type %4.4x located at %xh/%xh\n",
 		 dev->vendor, dev->device, cards[numCards].addr0,
 		 cards[numCards].addr1));
 	numCards++;
@@ -895,6 +1093,12 @@ void cleanup_module(void)
 #endif
 
 	unregister_chrdev(MAJOR_3DFX, "3dfx");
+	if (numCards)
+	{
+		release_region(cards[0].ioaddr, ASIC_IO_SIZE);
+        release_mem_region(cards[0].addr0, cards[0].memsize);
+		mca_mark_as_unused(cards[0].slot);
+	}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 	pci_unregister_driver(&driver_3dfx);

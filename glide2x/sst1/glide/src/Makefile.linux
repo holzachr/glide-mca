@@ -51,7 +51,9 @@ GLIDE_SONAME = $(GLIDE_SO).$(GLIDE_VERSION_MAJOR)
 GLIDE_SHARED = $(GLIDE_SONAME).$(GLIDE_VERSION_MINOR)
 
 FX_GLIDE_HW ?= sst1
-FX_GLIDE_SW = ../../../swlibs
+#FX_GLIDE_SW = ../../../swlibs
+FX_GLIDE_SW = ../../../../swlibs
+#FX_GLIDE_SW = /mnt/sr/glide/swlibs
 GLIDE_LIBDIR = ../../lib/$(FX_GLIDE_HW)
 
 ###############################################################################
@@ -114,7 +116,8 @@ CDEFS += -DGLIDE_PLUG -DGLIDE_SPLASH
 ARFLAGS = rus
 
 # assembler
-ASFLAGS = -O6 -felf -D__linux__
+#ASFLAGS = -O6 -felf -D__linux__
+ASFLAGS = -felf -D__linux__
 ASFLAGS += $(CDEFS)
 
 # compiler

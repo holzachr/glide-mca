@@ -245,6 +245,10 @@ static struct pci_card {
 //TODO #define DEBUGMSG(x)
 //#endif
 
+static int asic10 = -1;    //TODO remove
+static int asic14 = -1;
+
+
 /*
  * This macro is for accessing vma->vm_offset or vma->vm_pgoff depending
  * on kernel version.
@@ -337,12 +341,14 @@ static void init_asic(unsigned long ioaddr)
     outb(0x00,       ioaddr + 0x1D);
     outb(0x4F,       ioaddr + 0x1E);
     outb(0x04,       ioaddr + 0x1F);
-    outl(0x00000000, ioaddr + 0x28);
+    outl(0x00000000, ioaddr + 0x28); //TODO original.
     outw(0x0006,     ioaddr + 0x00);
-    outl(0x00000000, ioaddr + 0x10);    //TODO BAR0 base/size? Decode-Mask like 0x3FFFFFFF ?
-    //outl(0x3FFFFFFF, ioaddr + 0x10);    //TODO BAR0 base/size? Decode-Mask like 0x3FFFFFFF ?
-    //outl(0x40000000, ioaddr + 0x10);    //TODO BAR0 base/size? Decode-Mask like 0x3FFFFFFF ?
-    outl(0x00000000, ioaddr + 0x14);    //TODO BAR1 base/size?
+    outl(0x00000000, ioaddr + 0x10);    //TODO original. BAR0 base/size? Decode-Mask like 0x3FFFFFFF ?
+    //outl(0x40FFFFFF, ioaddr + 0x10);    //TODO BAR0 base/size? Decode-Mask like 0x3FFFFFFF ?
+    outl(0x00000000, ioaddr + 0x14);    //TODO original. BAR1 base/size?
+    //outl(0x40FFFFFF, ioaddr + 0x14);    //TODO original. BAR1 base/size?
+    //outl(asic10, ioaddr + 0x10); //TODO remove
+    //outl(asic14, ioaddr + 0x14); //TODO remove
     outw(0x0FFF,     ioaddr + 0x1A);
     outb(0x7F,       ioaddr + 0x22);
     outw(0x03FF,     ioaddr + 0x20);    //TODO IO decode mask? No, does not look like it.
@@ -356,11 +362,11 @@ static void init_asic(unsigned long ioaddr)
     //        printk("\n");
     //} 
 
-    //for (i = 0; i < 0x40; i += 4)		//TODO remove
-    //{
-    //    temp = asic_read_pci_config(ioaddr, i);
-    //    DEBUGMSG(("PCI config 0x%2.2X: 0x%8.8X\n", i, temp));
-    //}
+    for (i = 0; i < 0x04; i += 4)		//TODO remove
+    {
+        temp = asic_read_pci_config(ioaddr, i);
+        DEBUGMSG(("PCI config 0x%2.2X: 0x%8.8X\n", i, temp));
+    }
 }
 
 #if HAVE_DEVFS
@@ -379,7 +385,7 @@ static void findMcaCardType(int vendor, int device)
     unsigned int  dma = 0;
     int cards_found = 0;
     int slot = MCA_NOTFOUND;
-	unsigned int viddid, control, membase, temp, memsize;
+    unsigned int viddid, control, membase, temp, memsize;
     int i;  //TODO remove
 
     if(ioaddr != 0)
@@ -412,8 +418,12 @@ static void findMcaCardType(int vendor, int device)
 
 		viddid = asic_read_pci_config(ioaddr, PCI_VENDOR_ID_LINUX);
 
+		DEBUGMSG(("PCI device VID/PDI is %8.8X\n", viddid));
+
+		DEBUGMSG(("Looking vor vendor %4.4X, device %4.4X\n", vendor, device));
+
 		if (  ((viddid & 0xFFFF) == vendor)
-			&&((viddid > 16)     == device))
+			&&((viddid >> 16)     == device))
 		{
 			temp = asic_read_pci_config(ioaddr, PCI_INTERRUPT_LINE);
 			temp |= 256;	// Disable interrupts
@@ -426,23 +436,23 @@ static void findMcaCardType(int vendor, int device)
 			// Let's place the memory window at 1 GB, this is where the PCI BIOS
 			// of my IBM PC 750 sets it when I put the 3dfx card in a PCI slot.
             // Let's hope it's free.
-            membase = 0x40000000;
-			asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX, membase | (1 << 3));    //TODO check if memory is used?
-			asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_1_LINUX, 0x00000000);
+            membase = 0x42000000;
+            asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX, membase | (1 << 3));    //TODO check if memory is used?
+            asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_1_LINUX, 0x00000000);
 
             cards[numCards].addr0 = membase;
             cards[numCards].addr1 = 0x00000000;
 			
-			/* Optional, determining BAR size:
+            /* Optional, determining BAR size:
              * From the PCI Specification v2.2:
-			 * Implementation Note: Sizing a 32 bit Base Address Register Example */
+             * Implementation Note: Sizing a 32 bit Base Address Register Example */
 			temp = asic_read_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX);
 			asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX, 0xFFFFFFF0);
 			memsize = asic_read_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX);
 			memsize &= 0xFFFFFFF0;		// Ignore encoding information bits
 			memsize ^= 0xFFFFFFFF;		// Invert all bits
 			memsize += 1;				// This is the memory range decoded by the register!
-            DEBUGMSG(("3dfx: BAR size is %xh\n", memsize));
+            DEBUGMSG(("3dfx: BAR size is %xh\n", memsize));            //TODO should be 1000000 = 16 MB for Voodoo 1
             asic_write_pci_config(ioaddr, PCI_BASE_ADDRESS_0_LINUX, temp);            
 
 			control = asic_read_pci_config(ioaddr, PCI_COMMAND_LINUX);
@@ -456,25 +466,52 @@ static void findMcaCardType(int vendor, int device)
             cards[numCards].addr0 &= ~0xF;
             cards[numCards].addr1 &= ~0xF;
             cards[numCards].vendor = (viddid & 0xFFFF);
-            cards[numCards].type = (viddid > 16);
+            cards[numCards].type = (viddid >> 16);
             cards[numCards].curFile = 0;
 
             DEBUGMSG(("3dfx: board vendor %4.4x type %4.4x located at %xh/%xh\n",
                 vendor, device, cards[numCards].addr0, cards[numCards].addr1));
                 
-            for (i = membase; i < (membase + 0x100); i += 4)
+            for (i = membase; i < (membase + 0x40); i += 4)	//TODO remove
             {
                 int * p = (int *)i;                
-                printk("%8.8X ", (int)(*(int *)i));
+                printk("BAR: %8.8X ", (int)(*(int *)i));
+                
+                //TODO Freeze
+                //void * ioptr = ioremap(membase, memsize);
+                //printk("%8.8X ", (int)readl(ioptr));
+                
+                // Segfault
+                //void * ioptr = phys_to_virt(membase);
+                //printk("%8.8X ", (int)(*(int *)ioptr));
                 
                 //if (((i + 1) % 16) == 0)
                 //    printk("\n");
             } 
+            printk("\n");
 
+/*			for (i = membase; i < (membase + 0x40); i += 4)	//TODO remove
+            {
+                int * p = (int *)i;
+                *(int *)i = i;
+            }
+            printk("\n");
+
+			for (i = membase; i < (membase + 0x40); i += 4)	//TODO remove
+            {
+                int * p = (int *)i;
+                printk("BAR: %8.8X ", (int)(*(int *)i));
+            }
+            printk("\n");
+ */
             mca_set_adapter_name(slot, ADAPTER_NAME);
             mca_mark_as_used(slot);
             request_region(ioaddr, ASIC_IO_SIZE, ADAPTER_NAME);
-            request_mem_region(membase, memsize, ADAPTER_NAME);
+            if (request_mem_region(membase, memsize, ADAPTER_NAME) == NULL)
+            {
+                DEBUGMSG(("3dfx: unable to request_mem_region\n"));
+                return;
+            }
 
             ++numCards;
 		}
@@ -540,7 +577,7 @@ static int mmap_3dfx(struct file *file, struct vm_area_struct *vma)
 	int i;
 
 	DEBUGMSG(("3dfx: Entering mmap_3dfx\n"));
-
+    
 	for (i = 0; i < numCards; ++i) {
 		if ((cards[i].addr0 == VM_OFFSET(vma)) ||
 		    (cards[i].addr1 == VM_OFFSET(vma)))
@@ -560,19 +597,29 @@ static int mmap_3dfx(struct file *file, struct vm_area_struct *vma)
 		DEBUGMSG(("3dfx: Invalid mapping size requested\n"));
 		return -EINVAL;
 	}
+    
+    DEBUGMSG(("3dfx: Remap vma=0x%8.8X vm_start=0x%8.8X ofs=0x%8.8X len=0x%8.8X prot=0x%8.8X\n", vma, vma->vm_start, VM_OFFSET(vma), len, vma->vm_page_prot));
+    
 #if defined(__i386__)
 	pgprot_val(vma->vm_page_prot) |= _PAGE_PCD;
 #endif
-	if (my_remap_page_range(vma, vma->vm_start, VM_OFFSET(vma), len,
-			        vma->vm_page_prot)) {
+
+    //#define my_remap_page_range(vma, start, ofs, len, prot) 
+	//  remap_page_range(start, ofs, len, prot)
+	if (my_remap_page_range(vma, vma->vm_start, VM_OFFSET(vma), len, vma->vm_page_prot)) {
 		DEBUGMSG(("3dfx: Page remap failed\n"));
 		return -EAGAIN;
 	}
+    
+    DEBUGMSG(("3dfx: Remap success\n"));
+    //return -EINVAL; //TODO to avoid lockup
+    
 	return 0;
 }
 
 static int doQueryBoards(void)
 {
+    DEBUGMSG(("3dfx: doQueryBoards %d\n", numCards));
 	return numCards;
 }
 
@@ -587,6 +634,8 @@ static int doQueryFetch(pioData *desc)
 	if (desc->device < 0 || desc->device >= numCards)
 		return -EINVAL;
 	i = desc->device;
+    
+    DEBUGMSG(("3dfx: doQueryFetch port=0x%2.2X size=%d\n", desc->port, desc->size));
 
 	switch (desc->port) {
 	case PCI_VENDOR_ID_LINUX:
@@ -671,6 +720,8 @@ static int doQueryUpdate(pioData *desc)
 
 	if (desc->device < 0 || desc->device >= numCards)
 		return -EINVAL;
+    
+    DEBUGMSG(("3dfx: doQueryUpdate port=0x%2.2X size=%d\n", desc->port, desc->size));
 
 	switch (desc->port) {
 	case PCI_COMMAND_LINUX:
@@ -732,7 +783,7 @@ static int doQuery(unsigned int cmd, unsigned long arg)
 	pioData desc;
 
 	if (_IOC_NR(cmd) == 2)
-		return doQueryBoards();
+        return doQueryBoards();
 	if (copy_from_user(&desc, (void *)arg, sizeof(pioData)))
 		return -EFAULT;
 	if (_IOC_NR(cmd) == 3)
@@ -764,6 +815,8 @@ static int doPIORead(pioData *desc)
 	default:
 		return -EPERM;
 	}
+    
+    DEBUGMSG(("3dfx: doPIORead size=%d port=0x%8.8X\n", desc->size, desc->port));
 
 	switch (desc->size) {
 	case 1:
@@ -807,6 +860,8 @@ static int doPIOWrite(pioData *desc)
 
 	if (copy_from_user(&retchar, desc->value, desc->size))
 		return -EFAULT;
+    
+    DEBUGMSG(("3dfx: doPIOWrite size=%d port=0x%8.8X\n", desc->size, desc->port));
 
 	switch (desc->size) {
 	case 1:
@@ -832,9 +887,13 @@ static int doPIO(unsigned int cmd, unsigned long arg)
 	if (copy_from_user(&desc, (void *)arg, sizeof(pioData)))
 		return -EFAULT;
 	if (_IOC_DIR(cmd) == _IOC_READ)
+    {        
 		return doPIORead(&desc);
+    }
 	if (_IOC_DIR(cmd) == _IOC_WRITE)
+    {
 		return doPIOWrite(&desc);
+    }
 
 	return -EINVAL;
 }
@@ -846,14 +905,14 @@ static int ioctl_3dfx(struct inode *inode, struct file *file, unsigned int cmd, 
 #endif
 {
 #ifdef HAVE_UNLOCKED_IOCTL
-	DEBUGMSG(("3dfx: Entering ioctl_3dfx, file %p cmd %x arg %lx\n",
+	//TODO DEBUGMSG(("3dfx: Entering ioctl_3dfx, file %p cmd %x arg %lx\n",
 	          file, cmd, arg));
 #else
-	DEBUGMSG(("3dfx: Entering ioctl_3dfx, inode %p file %p cmd %x arg %lx\n", inode, file, cmd, arg));
+	//TODO DEBUGMSG(("3dfx: Entering ioctl_3dfx, inode %p file %p cmd %x arg %lx\n", inode, file, cmd, arg));
 #endif
 
 	switch (_IOC_TYPE(cmd)) {
-	case '3':
+	case '3':        
 		return doQuery(cmd, arg);
 	case 0:
 		return doPIO(cmd, arg);
@@ -1031,12 +1090,23 @@ static struct pci_driver driver_3dfx = {
 };
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0) */
 
+MODULE_PARM(asic10, "i");
+MODULE_PARM_DESC(asic10, " ASIC I/O 10 value");
+MODULE_PARM(asic14, "i");
+MODULE_PARM_DESC(asic14, " ASIC I/O 14 value");
+
 #ifdef MODULE
 int init_module(void)
 {
 	int ret;
 
 	DEBUGMSG(("3dfx: Entering init_module()\n"));
+    
+    if (asic10 < 0)     //TODO remove
+        asic10 = 0x40000000;
+    if (asic14 > 0)
+        asic14 = 0x00000000;
+    printk("ASICx10 = 0x%8.8X, ASICx14 = 0x%8.8X\n", asic10, asic14);
 
 	if ((ret = register_chrdev(MAJOR_3DFX, "3dfx", &fops_3dfx)) < 0) {
 		printk("3dfx: Unable to register character device with major %d\n", MAJOR_3DFX);
@@ -1124,6 +1194,7 @@ long init_3dfx(long mem_start, long mem_end)
 	return mem_start;
 }
 #endif /* !MODULE */
+
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,1,21)
 MODULE_AUTHOR("Daryll Strauss et al.");
